@@ -85,7 +85,7 @@ class HDF5IO(HDMFIO):
     @docval({'name': 'namespace_catalog',
              'type': (NamespaceCatalog, TypeMap),
              'doc': 'the NamespaceCatalog or TypeMap to load namespaces into'},
-            {'name': 'path', 'type': str, 'doc': 'the path to the HDF5 file'},
+            {'name': 'path', 'type': (str, File), 'doc': 'the path to the HDF5 file'},
             {'name': 'namespaces', 'type': list, 'doc': 'the namespaces to load', 'default': None},
             returns="dict with the loaded namespaces", rtype=dict)
     def load_namespaces(cls, namespace_catalog, path, namespaces=None):
@@ -95,50 +95,59 @@ class HDF5IO(HDMFIO):
 
         d = {}
 
-        with File(path, 'r') as f:
-            if SPEC_LOC_ATTR not in f.attrs:
-                msg = "No cached namespaces found in %s" % path
-                warnings.warn(msg)
-                return d
+        if isinstance(path, File):
+            f = path
+            close = False
+        else:
+            f = File(path, 'r')
+            close = True
 
-            spec_group = f[f.attrs[SPEC_LOC_ATTR]]
-
-            if namespaces is None:
-                namespaces = list(spec_group.keys())
-
-            readers = dict()
-            deps = dict()
-            for ns in namespaces:
-                ns_group = spec_group[ns]
-                # NOTE: by default, objects within groups are iterated in alphanumeric order
-                version_names = list(ns_group.keys())
-                if len(version_names) > 1:
-                    # prior to HDMF 1.6.1, extensions without a version were written under the group name "unversioned"
-                    # make sure that if there is another group representing a newer version, that is read instead
-                    if 'unversioned' in version_names:
-                        version_names.remove('unversioned')
-                if len(version_names) > 1:
-                    # as of HDMF 1.6.1, extensions without a version are written under the group name "None"
-                    # make sure that if there is another group representing a newer version, that is read instead
-                    if 'None' in version_names:
-                        version_names.remove('None')
-                latest_version = version_names[-1]
-                ns_group = ns_group[latest_version]
-                reader = H5SpecReader(ns_group)
-                readers[ns] = reader
-                for spec_ns in reader.read_namespace('namespace'):
-                    deps[ns] = list()
-                    for s in spec_ns['schema']:
-                        dep = s.get('namespace')
-                        if dep is not None:
-                            deps[ns].append(dep)
-
-            order = cls._order_deps(deps)
-            for ns in order:
-                reader = readers[ns]
-                d.update(namespace_catalog.load_namespaces('namespace', reader=reader))
-
+        if SPEC_LOC_ATTR not in f.attrs:
+            msg = "No cached namespaces found in %s" % path
+            warnings.warn(msg)
             return d
+
+        spec_group = f[f.attrs[SPEC_LOC_ATTR]]
+
+        if namespaces is None:
+            namespaces = list(spec_group.keys())
+
+        readers = dict()
+        deps = dict()
+        for ns in namespaces:
+            ns_group = spec_group[ns]
+            # NOTE: by default, objects within groups are iterated in alphanumeric order
+            version_names = list(ns_group.keys())
+            if len(version_names) > 1:
+                # prior to HDMF 1.6.1, extensions without a version were written under the group name "unversioned"
+                # make sure that if there is another group representing a newer version, that is read instead
+                if 'unversioned' in version_names:
+                    version_names.remove('unversioned')
+            if len(version_names) > 1:
+                # as of HDMF 1.6.1, extensions without a version are written under the group name "None"
+                # make sure that if there is another group representing a newer version, that is read instead
+                if 'None' in version_names:
+                    version_names.remove('None')
+            latest_version = version_names[-1]
+            ns_group = ns_group[latest_version]
+            reader = H5SpecReader(ns_group)
+            readers[ns] = reader
+            for spec_ns in reader.read_namespace('namespace'):
+                deps[ns] = list()
+                for s in spec_ns['schema']:
+                    dep = s.get('namespace')
+                    if dep is not None:
+                        deps[ns].append(dep)
+
+        order = cls._order_deps(deps)
+        for ns in order:
+            reader = readers[ns]
+            d.update(namespace_catalog.load_namespaces('namespace', reader=reader))
+
+        if close:
+            f.close()
+
+        return d
 
     @classmethod
     def _order_deps(cls, deps):
